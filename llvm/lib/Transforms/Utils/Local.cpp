@@ -984,6 +984,14 @@ bool llvm::TryToSimplifyUncondBranchFromEmptyBlock(BasicBlock *BB,
   // folding the branch isn't profitable in that case anyway.
   if (!Succ->getSinglePredecessor()) {
     BasicBlock::iterator BBI = BB->begin();
+
+    //InidrectBr to a BB that contains Phi
+    for (auto &U: BB->uses()) {
+      if (isa<IndirectBrInst>(U.getUser()) && isa<PHINode>(Succ->begin())) {
+        return false;
+      }
+    }
+
     while (isa<PHINode>(*BBI)) {
       for (Use &U : BBI->uses()) {
         if (PHINode* PN = dyn_cast<PHINode>(U.getUser())) {
