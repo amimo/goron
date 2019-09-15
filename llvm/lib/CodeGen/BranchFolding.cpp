@@ -412,7 +412,8 @@ void BranchFolder::replaceTailWithBranchTo(MachineBasicBlock::iterator OldInst,
   if (UpdateLiveIns) {
     // OldInst should always point to an instruction.
     MachineBasicBlock &OldMBB = *OldInst->getParent();
-    LiveRegs.clear();
+//    LiveRegs.clear();
+    LiveRegs.init(*TRI);
     LiveRegs.addLiveOuts(OldMBB);
     // Move backward to the place where will insert the jump.
     MachineBasicBlock::iterator I = OldMBB.end();
