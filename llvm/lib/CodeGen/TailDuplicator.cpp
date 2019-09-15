@@ -557,6 +557,8 @@ bool TailDuplicator::shouldTailDuplicate(bool IsSimple,
   // Don't try to tail-duplicate single-block loops.
   if (TailBB.isSuccessor(&TailBB))
     return false;
+  if (TailBB.hasAddressTaken())
+    return false;
 
   // Set the limit on the cost to duplicate. When optimizing for size,
   // duplicate only one, because one branch instruction can be eliminated to
