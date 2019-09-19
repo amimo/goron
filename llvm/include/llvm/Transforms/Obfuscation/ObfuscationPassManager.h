@@ -2,6 +2,7 @@
 #define OBFUSCATION_OBFUSCATIONPASSMANAGER_H
 
 #include "llvm/Transforms/Obfuscation/IndirectBranch.h"
+#include "llvm/Transforms/Obfuscation/IndirectCall.h"
 
 // Namespace
 namespace llvm {
