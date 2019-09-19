@@ -13,6 +13,7 @@ struct ObfuscationOptions {
   void dump();
 
   bool EnableIndirectBr;
+  bool EnableIndirectCall;
   bool hasFilter;
 
 private:

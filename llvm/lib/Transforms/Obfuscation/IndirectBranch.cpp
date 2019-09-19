@@ -1,8 +1,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/InstIterator.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Obfuscation/ObfuscationPassManager.h"
+#include "llvm/Transforms/Obfuscation/IndirectBranch.h"
 #include "llvm/Transforms/Obfuscation/ObfuscationOptions.h"
 #include "llvm/Transforms/Obfuscation/IPObfuscationContext.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
@@ -69,7 +68,7 @@ struct IndirectBranch : public FunctionPass {
   }
 
   GlobalVariable *getIndirectTargets(Function &F, ConstantInt *EncKey) {
-    std::string GVName(F.getName().str() + "_IndirectTargets");
+    std::string GVName(F.getName().str() + "_IndirectBrTargets");
     GlobalVariable *GV = F.getParent()->getNamedGlobal(GVName);
     if (GV)
       return GV;
@@ -131,7 +130,6 @@ struct IndirectBranch : public FunctionPass {
       MySecret = SecretInfo->SecretLI;
     } else {
       MySecret = ConstantInt::get(Type::getInt32Ty(Ctx), 0, true);
-      MySecret->setName("SecretArg");
     }
 
     ConstantInt *Zero = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
@@ -182,9 +180,6 @@ FunctionPass *llvm::createIndirectBranchPass() { return new IndirectBranch(); }
 FunctionPass *llvm::createIndirectBranchPass(bool flag,
                                              IPObfuscationContext *IPO,
                                              ObfuscationOptions *Options) {
-  return new IndirectBranch(flag,
-                            IPO,
-                            Options);
+  return new IndirectBranch(flag, IPO, Options);
 }
-
 INITIALIZE_PASS(IndirectBranch, "indbr", "Enable IR Indirect Branch Obfuscation", false, false)
