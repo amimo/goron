@@ -3,7 +3,8 @@ Yet another llvm based obfuscator.
 
 当前支持特性：
  - 混淆过程间相关
- - 间接跳转,并加密跳转目标
+ - 间接跳转,并加密跳转目标(-mllvm --irobf-indbr)
+ - 间接函数调用,并加密目标函数地址(-mllvm --irobf-icall)
 
 ## 下载
 ```
@@ -33,3 +34,7 @@ $ CFLAGS+="-mllvm -irobf -mllvm --irobf-indbr" or CXXFLAGS+="-mllvm -irobf -mllv
 $ ./configure
 $ make
 ```
+
+## 参考资源
++ [Hikari](https://github.com/HikariObfuscator/Hikari)
++ [ollvm](https://github.com/obfuscator-llvm/obfuscator)
