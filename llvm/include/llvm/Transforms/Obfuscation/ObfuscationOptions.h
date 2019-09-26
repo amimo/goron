@@ -14,6 +14,7 @@ struct ObfuscationOptions {
 
   bool EnableIndirectBr;
   bool EnableIndirectCall;
+  bool EnableIndirectGV;
   bool hasFilter;
 
 private:
