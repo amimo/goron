@@ -7,6 +7,7 @@ add_llvm_library(LLVMObfuscation
   IndirectBranch.cpp
   IndirectCall.cpp
   IndirectGlobalVariable.cpp
+  Flattening.cpp
   DEPENDS
   LLVMLinker
   )
