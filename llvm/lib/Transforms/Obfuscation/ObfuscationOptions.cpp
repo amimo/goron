@@ -12,6 +12,7 @@ namespace llvm {
 void ObfuscationOptions::init() {
   EnableIndirectBr = false;
   EnableIndirectCall = false;
+  EnableIndirectGV = false;
   hasFilter = false;
 }
 
@@ -65,6 +66,8 @@ void ObfuscationOptions::handleRoot(yaml::Node *n) {
         EnableIndirectBr = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "IndirectCall") {
         EnableIndirectCall = static_cast<bool>(getIntVal(i->getValue()));
+      } else if (K == "IndirectGV") {
+        EnableIndirectGV = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "Filter") {
         hasFilter = true;
         FunctionFilter = getStringList(i->getValue());
@@ -95,6 +98,7 @@ bool ObfuscationOptions::parseOptions(const Twine &FileName) {
 void ObfuscationOptions::dump() {
   dbgs() << "EnableIndirectBr: " << EnableIndirectBr << "\n"
          << "EnableIndirectCall:" << EnableIndirectCall << "\n"
+         << "EnableIndirectGV:" << EnableIndirectGV << "\n"
          << "hasFilter:" << hasFilter << "\n";
 }
 
