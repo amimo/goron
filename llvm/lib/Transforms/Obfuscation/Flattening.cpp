@@ -12,11 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Obfuscation/Flattening.h"
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Utils.h"
 #include "llvm/CryptoUtils.h"
+#include "llvm/ADT/Statistic.h"
 
 #define DEBUG_TYPE "flattening"
 
+using namespace std;
 using namespace llvm;
 
 // Stats
@@ -27,17 +30,25 @@ struct Flattening : public FunctionPass {
   static char ID;  // Pass identification, replacement for typeid
   bool flag;
 
-  Flattening() : FunctionPass(ID) {}
-  Flattening(bool flag) : FunctionPass(ID) { this->flag = flag; }
+  IPObfuscationContext *IPO;
+  ObfuscationOptions *Options;
+
+  Flattening() : FunctionPass(ID) {
+    this->flag = false;
+    IPO = nullptr;
+    this->Options = nullptr;
+  }
+
+  Flattening(bool flag, IPObfuscationContext *IPO, ObfuscationOptions *Options) : FunctionPass(ID) {
+    this->flag = flag;
+    this->IPO = IPO;
+    this->Options = Options;
+  }
 
   bool runOnFunction(Function &F);
   bool flatten(Function *f);
 };
 }
-
-char Flattening::ID = 0;
-static RegisterPass<Flattening> X("flattening", "Call graph flattening");
-Pass *llvm::createFlattening(bool flag) { return new Flattening(flag); }
 
 bool Flattening::runOnFunction(Function &F) {
   Function *tmp = &F;
@@ -239,4 +250,11 @@ bool Flattening::flatten(Function *f) {
   fixStack(f);
 
   return true;
+}
+
+char Flattening::ID = 0;
+static RegisterPass<Flattening> X("flattening", "Call graph flattening");
+FunctionPass *llvm::createFlatteningPass() { return new Flattening(); }
+FunctionPass *llvm::createFlatteningPass(bool flag, IPObfuscationContext *IPO, ObfuscationOptions *Options) {
+  return new Flattening(flag, IPO, Options);
 }

@@ -4,6 +4,7 @@
 #include "llvm/Transforms/Obfuscation/IndirectBranch.h"
 #include "llvm/Transforms/Obfuscation/IndirectCall.h"
 #include "llvm/Transforms/Obfuscation/IndirectGlobalVariable.h"
+#include "llvm/Transforms/Obfuscation/Flattening.h"
 
 // Namespace
 namespace llvm {
