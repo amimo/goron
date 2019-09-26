@@ -5,6 +5,7 @@ Yet another llvm based obfuscator.
  - 混淆过程间相关
  - 间接跳转,并加密跳转目标(-mllvm --irobf-indbr)
  - 间接函数调用,并加密目标函数地址(-mllvm --irobf-icall)
+ - 间接全局变量引用,并加密变量地址(-mllvm --irobf-indgv)
 
 ## 下载
 ```
