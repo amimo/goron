@@ -6,6 +6,7 @@ add_llvm_library(LLVMObfuscation
   IPObfuscationContext.cpp
   IndirectBranch.cpp
   IndirectCall.cpp
+  IndirectGlobalVariable.cpp
   DEPENDS
   LLVMLinker
   )
