@@ -22,6 +22,10 @@ static cl::opt<bool>
     EnableIndirectCall("irobf-icall", cl::init(false), cl::NotHidden,
                      cl::desc("Enable IR Indirect Call Obfuscation."));
 
+static cl::opt<bool>
+    EnableIndirectGV("irobf-indgv", cl::init(false), cl::NotHidden,
+                       cl::desc("Enable IR Indirect Global Variable Obfuscation."));
+
 static cl::opt<std::string>
     GoronConfigure("goron-cfg", cl::desc("Goron configuration file"), cl::Optional);
 
@@ -93,7 +97,7 @@ struct ObfuscationPassManager : public ModulePass {
   }
 
   bool runOnModule(Module &M) override {
-    if (EnableIndirectBr || EnableIndirectCall) {
+    if (EnableIndirectBr || EnableIndirectCall || EnableIndirectGV) {
       EnableIRObfusaction = true;
     }
 
@@ -107,6 +111,7 @@ struct ObfuscationPassManager : public ModulePass {
     add(IPO);
     add(llvm::createIndirectBranchPass(EnableIndirectBr || Options->EnableIndirectBr, IPO, Options));
     add(llvm::createIndirectCallPass(EnableIndirectCall || Options->EnableIndirectCall, IPO, Options));
+    add(llvm::createIndirectGlobalVariablePass(EnableIndirectGV || Options->EnableIndirectGV, IPO, Options));
 
     bool Changed = run(M);
 

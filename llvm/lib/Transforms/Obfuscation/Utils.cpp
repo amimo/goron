@@ -1,4 +1,7 @@
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IRBuilder.h"
 
 // Shamefully borrowed from ../Scalar/RegToMem.cpp :(
@@ -142,4 +145,52 @@ bool toObfuscate(bool flag, Function *f, std::string attribute) {
   }
 
   return false;
+}
+
+void LowerConstantExpr(Function &F) {
+  SmallPtrSet<Instruction *, 8> WorkList;
+
+  for (inst_iterator It = inst_begin(F), E = inst_end(F); It != E; ++It) {
+    Instruction *I = &*It;
+
+    if (isa<LandingPadInst>(I))
+      continue;
+    if (auto *II = dyn_cast<IntrinsicInst>(I)) {
+      if (II->getIntrinsicID() == Intrinsic::eh_typeid_for) {
+        continue;
+      }
+    }
+
+    for (unsigned int i = 0; i < I->getNumOperands(); ++i) {
+      if (isa<ConstantExpr>(I->getOperand(i)))
+        WorkList.insert(I);
+    }
+  }
+
+  while (!WorkList.empty()) {
+    auto It = WorkList.begin();
+    Instruction *I = *It;
+    WorkList.erase(*It);
+
+    if (PHINode *PHI = dyn_cast<PHINode>(I)) {
+      for (unsigned int i = 0; i < PHI->getNumIncomingValues(); ++i) {
+        Instruction *TI = PHI->getIncomingBlock(i)->getTerminator();
+        if (ConstantExpr *CE = dyn_cast<ConstantExpr>(PHI->getIncomingValue(i))) {
+          Instruction *NewInst = CE->getAsInstruction();
+          NewInst->insertBefore(TI);
+          PHI->setIncomingValue(i, NewInst);
+          WorkList.insert(NewInst);
+        }
+      }
+    } else {
+      for (unsigned int i = 0; i < I->getNumOperands(); ++i) {
+        if (ConstantExpr *CE = dyn_cast<ConstantExpr>(I->getOperand(i))) {
+          Instruction *NewInst = CE->getAsInstruction();
+          NewInst->insertBefore(I);
+          I->replaceUsesOfWith(CE, NewInst);
+          WorkList.insert(NewInst);
+        }
+      }
+    }
+  }
 }
