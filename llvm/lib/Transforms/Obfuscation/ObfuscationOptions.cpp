@@ -13,6 +13,7 @@ void ObfuscationOptions::init() {
   EnableIndirectBr = false;
   EnableIndirectCall = false;
   EnableIndirectGV = false;
+  EnableCFF = false;
   hasFilter = false;
 }
 
@@ -68,6 +69,8 @@ void ObfuscationOptions::handleRoot(yaml::Node *n) {
         EnableIndirectCall = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "IndirectGV") {
         EnableIndirectGV = static_cast<bool>(getIntVal(i->getValue()));
+      } else if (K == "ControlFlowFlatten") {
+        EnableCFF = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "Filter") {
         hasFilter = true;
         FunctionFilter = getStringList(i->getValue());
@@ -97,8 +100,9 @@ bool ObfuscationOptions::parseOptions(const Twine &FileName) {
 
 void ObfuscationOptions::dump() {
   dbgs() << "EnableIndirectBr: " << EnableIndirectBr << "\n"
-         << "EnableIndirectCall:" << EnableIndirectCall << "\n"
-         << "EnableIndirectGV:" << EnableIndirectGV << "\n"
+         << "EnableIndirectCall: " << EnableIndirectCall << "\n"
+         << "EnableIndirectGV: " << EnableIndirectGV << "\n"
+         << "EnableCFF: " << EnableCFF << "\n"
          << "hasFilter:" << hasFilter << "\n";
 }
 
