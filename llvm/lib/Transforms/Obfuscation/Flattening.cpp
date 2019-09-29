@@ -13,6 +13,7 @@
 
 #include "llvm/Transforms/Obfuscation/Flattening.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Obfuscation/IPObfuscationContext.h"
 #include "llvm/Transforms/Utils.h"
 #include "llvm/CryptoUtils.h"
 #include "llvm/ADT/Statistic.h"
@@ -32,6 +33,7 @@ struct Flattening : public FunctionPass {
 
   IPObfuscationContext *IPO;
   ObfuscationOptions *Options;
+  CryptoUtils RandomEngine;
 
   Flattening() : FunctionPass(ID) {
     this->flag = false;
@@ -93,6 +95,20 @@ bool Flattening::flatten(Function *f) {
   // Nothing to flatten
   if (origBB.size() <= 1) {
     return false;
+  }
+
+  LLVMContext &Ctx = f->getContext();
+
+  const IPObfuscationContext::IPOInfo *SecretInfo = nullptr;
+  if (IPO) {
+    SecretInfo = IPO->getIPOInfo(f);
+  }
+
+  Value *MySecret;
+  if (SecretInfo) {
+    MySecret = SecretInfo->SecretLI;
+  } else {
+    MySecret = ConstantInt::get(Type::getInt32Ty(Ctx), 0, true);
   }
 
   // Remove first BB
@@ -174,6 +190,7 @@ bool Flattening::flatten(Function *f) {
     switchI->addCase(numCase, i);
   }
 
+  ConstantInt *Zero = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
   // Recalculate switchVar
   for (vector<BasicBlock *>::iterator b = origBB.begin(); b != origBB.end();
        ++b) {
@@ -202,8 +219,18 @@ bool Flattening::flatten(Function *f) {
                                  switchI->getNumCases() - 1, scrambling_key)));
       }
 
+      // numCase = MySecret - (MySecret - numCase)
+      // X = MySecret - numCase
+      Constant *X;
+      if (SecretInfo) {
+        X = ConstantExpr::getSub(SecretInfo->SecretCI, numCase);
+      } else {
+        X = ConstantExpr::getSub(Zero, numCase);
+      }
+      Value *newNumCase = BinaryOperator::Create(Instruction::Sub, MySecret, X, "", i);
+
       // Update switchVar and jump to the end of loop
-      new StoreInst(numCase, load->getPointerOperand(), i);
+      new StoreInst(newNumCase, load->getPointerOperand(), i);
       BranchInst::Create(loopEnd, i);
       continue;
     }
@@ -231,10 +258,21 @@ bool Flattening::flatten(Function *f) {
                                  switchI->getNumCases() - 1, scrambling_key)));
       }
 
+      Constant *X, *Y;
+      if (SecretInfo) {
+        X = ConstantExpr::getSub(SecretInfo->SecretCI, numCaseTrue);
+        Y = ConstantExpr::getSub(SecretInfo->SecretCI, numCaseFalse);
+      } else {
+        X = ConstantExpr::getSub(Zero, numCaseTrue);
+        Y = ConstantExpr::getSub(Zero, numCaseFalse);
+      }
+      Value *newNumCaseTrue = BinaryOperator::Create(Instruction::Sub, MySecret, X, "", i->getTerminator());
+      Value *newNumCaseFalse = BinaryOperator::Create(Instruction::Sub, MySecret, Y, "", i->getTerminator());
+
       // Create a SelectInst
       BranchInst *br = cast<BranchInst>(i->getTerminator());
       SelectInst *sel =
-          SelectInst::Create(br->getCondition(), numCaseTrue, numCaseFalse, "",
+          SelectInst::Create(br->getCondition(), newNumCaseTrue, newNumCaseFalse, "",
                              i->getTerminator());
 
       // Erase terminator
