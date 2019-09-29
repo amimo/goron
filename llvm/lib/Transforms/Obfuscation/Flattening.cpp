@@ -287,6 +287,9 @@ bool Flattening::flatten(Function *f) {
 
   fixStack(f);
 
+  lower->runOnFunction(*f);
+  delete(lower);
+
   return true;
 }
 
