@@ -38,6 +38,14 @@ bool IPObfuscationContext::runOnModule(llvm::Module &M) {
     computeCallSiteSecretArgument(F);
   }
 
+  for (AllocaInst *Slot:DeadSlots) {
+    for (Value::use_iterator I = Slot->use_begin(), E = Slot->use_end(); I != E; ++I) {
+      if (Instruction *Inst = dyn_cast<Instruction>(I->getUser())) {
+        Inst->eraseFromParent();
+      }
+    }
+    Slot->eraseFromParent();
+  }
   return true;
 }
 
@@ -187,6 +195,7 @@ Function *IPObfuscationContext::InsertSecretArgument(Function *F) {
   IPOInfo *Info = IPOInfoMap[F];
   Info->SecretLI->eraseFromParent();
   Info->SecretLI = MySecret;
+  DeadSlots.push_back(Info->CallerSlot);
 
   IPOInfoMap[NF] = Info;
   IPOInfoMap.erase(F);

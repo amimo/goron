@@ -33,6 +33,7 @@ struct IPObfuscationContext : public ModulePass {
   std::set<Function *> LocalFunctions;
   SmallVector<IPOInfo *, 16> IPOInfoList;
   std::map<Function *, IPOInfo *> IPOInfoMap;
+  std::vector<AllocaInst *> DeadSlots;
 
   IPObfuscationContext() : ModulePass(ID) { this->flag = false; }
   IPObfuscationContext(bool flag) : ModulePass(ID) { this->flag = flag; }
