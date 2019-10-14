@@ -14,6 +14,7 @@ void ObfuscationOptions::init() {
   EnableIndirectCall = false;
   EnableIndirectGV = false;
   EnableCFF = false;
+  EnableCSE = false;
   hasFilter = false;
 }
 
@@ -53,7 +54,11 @@ static std::set<std::string> getStringList(yaml::Node *n) {
 }
 
 bool ObfuscationOptions::skipFunction(const Twine &FName) {
-  return hasFilter && FunctionFilter.count(FName.str()) == 0;
+  if (FName.str().find("goron_") == std::string::npos) {
+    return hasFilter && FunctionFilter.count(FName.str()) == 0;
+  } else {
+    return true;
+  }
 }
 
 void ObfuscationOptions::handleRoot(yaml::Node *n) {
@@ -71,6 +76,8 @@ void ObfuscationOptions::handleRoot(yaml::Node *n) {
         EnableIndirectGV = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "ControlFlowFlatten") {
         EnableCFF = static_cast<bool>(getIntVal(i->getValue()));
+      } else if (K == "ConstantStringEncryption") {
+        EnableCSE = static_cast<bool>(getIntVal(i->getValue()));
       } else if (K == "Filter") {
         hasFilter = true;
         FunctionFilter = getStringList(i->getValue());

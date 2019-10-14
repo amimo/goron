@@ -30,6 +30,10 @@ static cl::opt<bool>
     EnableIRFlattening("irobf-cff", cl::init(false), cl::NotHidden,
                      cl::desc("Enable IR Control Flow Flattening Obfuscation."));
 
+static cl::opt<bool>
+    EnableIRStringEncryption("irobf-cse", cl::init(false), cl::NotHidden,
+                       cl::desc("Enable IR Constant String Encryption."));
+
 static cl::opt<std::string>
     GoronConfigure("goron-cfg", cl::desc("Goron configuration file"), cl::Optional);
 
@@ -39,7 +43,9 @@ struct ObfuscationPassManager : public ModulePass {
   static char ID; // Pass identification
   SmallVector<Pass *, 8> Passes;
 
-  ObfuscationPassManager() : ModulePass(ID) {};
+  ObfuscationPassManager() : ModulePass(ID) {
+    initializeObfuscationPassManagerPass(*PassRegistry::getPassRegistry());
+  };
 
   StringRef getPassName() const override {
     return "Obfuscation Pass Manager";
@@ -101,7 +107,7 @@ struct ObfuscationPassManager : public ModulePass {
   }
 
   bool runOnModule(Module &M) override {
-    if (EnableIndirectBr || EnableIndirectCall || EnableIndirectGV || EnableIRFlattening) {
+    if (EnableIndirectBr || EnableIndirectCall || EnableIndirectGV || EnableIRFlattening || EnableIRStringEncryption) {
       EnableIRObfusaction = true;
     }
 
@@ -114,6 +120,7 @@ struct ObfuscationPassManager : public ModulePass {
     IPObfuscationContext *IPO = llvm::createIPObfuscationContextPass(true);
 
     add(IPO);
+    add(llvm::createStringEncryptionPass(EnableIRStringEncryption || Options->EnableCSE, IPO, Options.get()));
     add(llvm::createFlatteningPass(EnableIRFlattening || Options->EnableCFF, IPO, Options.get()));
     add(llvm::createIndirectBranchPass(EnableIndirectBr || Options->EnableIndirectBr, IPO, Options.get()));
     add(llvm::createIndirectCallPass(EnableIndirectCall || Options->EnableIndirectCall, IPO, Options.get()));
@@ -128,4 +135,5 @@ struct ObfuscationPassManager : public ModulePass {
 
 char ObfuscationPassManager::ID = 0;
 ModulePass *llvm::createObfuscationPassManager() { return new ObfuscationPassManager(); }
-INITIALIZE_PASS(ObfuscationPassManager, "irobf", "Enable IR Obfuscation", false, false)
+INITIALIZE_PASS_BEGIN(ObfuscationPassManager, "irobf", "Enable IR Obfuscation", false, false)
+INITIALIZE_PASS_END(ObfuscationPassManager, "irobf", "Enable IR Obfuscation", false, false)
