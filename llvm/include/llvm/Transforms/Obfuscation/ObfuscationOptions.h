@@ -16,6 +16,7 @@ struct ObfuscationOptions {
   bool EnableIndirectCall;
   bool EnableIndirectGV;
   bool EnableCFF;
+  bool EnableCSE;
   bool hasFilter;
 
 private:
