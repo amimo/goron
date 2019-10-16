@@ -2,6 +2,7 @@
 #include "llvm/Transforms/Obfuscation/IPObfuscationContext.h"
 #include "llvm/Transforms/Obfuscation/StringEncryption.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
+#include "llvm/Transforms/Utils/GlobalStatus.h"
 #include "llvm/IR/TypeBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Constants.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/CryptoUtils.h"
 #include <map>
+#include <set>
 #include <iostream>
 #include <algorithm>
 
@@ -37,6 +39,7 @@ struct StringEncryption : public ModulePass {
   std::vector<CSPEntry *> ConstantStringPool;
   std::map<GlobalVariable *, CSPEntry *> CSPEntryMap;
   GlobalVariable *EncryptedStringTable;
+  std::set<GlobalVariable *> MaybeDeadGlobalVars;
 
   StringEncryption() : ModulePass(ID) {
     this->flag = false;
@@ -127,6 +130,22 @@ bool StringEncryption::runOnModule(Module &M) {
     if (F.isDeclaration())
       continue;
     Changed |= processConstantStringUse(&F);
+  }
+
+  // phase 5: delete unused global variables
+  for (GlobalVariable *GV:MaybeDeadGlobalVars) {
+    if (!GV->hasLocalLinkage())
+      continue;
+    GV->removeDeadConstantUsers();
+    if (GV->use_empty()) {
+      if (GV->hasInitializer()) {
+        Constant *Init = GV->getInitializer();
+        GV->setInitializer(nullptr);
+        if (isSafeToDestroyConstant(Init))
+          Init->destroyConstant();
+      }
+      GV->eraseFromParent();
+    }
   }
   return Changed;
 }
@@ -246,6 +265,7 @@ bool StringEncryption::processConstantStringUse(Function *F) {
           IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
 
           Inst->replaceUsesOfWith(GV, Entry->DecGV);
+          MaybeDeadGlobalVars.insert(GV);
           Changed = true;
         }
       }
@@ -265,6 +285,7 @@ bool StringEncryption::processConstantStringUse(Function *F) {
           IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
 
           Inst->replaceUsesOfWith(GV, Entry->DecGV);
+          MaybeDeadGlobalVars.insert(GV);
           Changed = true;
         }
       }
