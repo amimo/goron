@@ -3,7 +3,6 @@
 #include "llvm/Transforms/Obfuscation/StringEncryption.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Utils/GlobalStatus.h"
-#include "llvm/IR/TypeBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalValue.h"
@@ -186,7 +185,7 @@ void StringEncryption::getRandomBytes(std::vector<uint8_t> &Bytes, uint32_t MinS
 Function *StringEncryption::buildDecryptFunction(Module *M, const StringEncryption::CSPEntry *Entry) {
   LLVMContext &Ctx = M->getContext();
   IRBuilder<> IRB(Ctx);
-  FunctionType *FuncTy = TypeBuilder<void(int8_t *, int8_t *), false>::get(Ctx);
+  FunctionType *FuncTy = FunctionType::get(Type::getVoidTy(Ctx), {IRB.getInt8PtrTy(), IRB.getInt8PtrTy()}, false);
   Function *DecFunc =
       Function::Create(FuncTy, GlobalValue::PrivateLinkage, "goron_decrypt_string_" + Twine::utohexstr(Entry->ID), M);
 
