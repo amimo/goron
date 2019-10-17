@@ -472,8 +472,6 @@ void PassManagerBuilder::populateModulePassManager(
   // is handled separately, so just check this is not the ThinLTO post-link.
   bool DefaultOrPreLinkPipeline = !PerformThinLTO;
 
-  MPM.add(createObfuscationPassManager());
-
   if (!PGOSampleUse.empty()) {
     MPM.add(createPruneEHPass());
     // In ThinLTO mode, when flattened profile is used, all the available
@@ -489,6 +487,7 @@ void PassManagerBuilder::populateModulePassManager(
   // If all optimizations are disabled, just run the always-inline pass and,
   // if enabled, the function merging pass.
   if (OptLevel == 0) {
+    MPM.add(createObfuscationPassManager());
     addPGOInstrPasses(MPM);
     if (Inliner) {
       MPM.add(Inliner);
@@ -566,6 +565,7 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createAttributorLegacyPass());
 
   MPM.add(createGlobalOptimizerPass()); // Optimize out global vars
+  MPM.add(createObfuscationPassManager());
   // Promote any localized global vars.
   MPM.add(createPromoteMemoryToRegisterPass());
 
