@@ -417,7 +417,6 @@ void PassManagerBuilder::addFunctionSimplificationPasses(
 void PassManagerBuilder::populateModulePassManager(
     legacy::PassManagerBase &MPM) {
 
-  MPM.add(createObfuscationPassManager());
 
   if (!PGOSampleUse.empty()) {
     MPM.add(createPruneEHPass());
@@ -430,6 +429,7 @@ void PassManagerBuilder::populateModulePassManager(
   // If all optimizations are disabled, just run the always-inline pass and,
   // if enabled, the function merging pass.
   if (OptLevel == 0) {
+    MPM.add(createObfuscationPassManager());
     addPGOInstrPasses(MPM);
     if (Inliner) {
       MPM.add(Inliner);
@@ -501,6 +501,7 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createIPSCCPPass());          // IP SCCP
   MPM.add(createCalledValuePropagationPass());
   MPM.add(createGlobalOptimizerPass()); // Optimize out global vars
+  MPM.add(createObfuscationPassManager());
   // Promote any localized global vars.
   MPM.add(createPromoteMemoryToRegisterPass());
 
