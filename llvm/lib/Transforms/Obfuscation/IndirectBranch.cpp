@@ -42,10 +42,9 @@ struct IndirectBranch : public FunctionPass {
 
   void NumberBasicBlock(Function &F) {
     for (auto &BB : F) {
-      TerminatorInst *TI = BB.getTerminator();
-      if (auto *BI = dyn_cast<BranchInst>(TI)) {
+      if (auto *BI = dyn_cast<BranchInst>(BB.getTerminator())) {
         if (BI->isConditional()) {
-          unsigned N = TI->getNumSuccessors();
+          unsigned N = BI->getNumSuccessors();
           for (unsigned I = 0; I < N; I++) {
             BasicBlock *Succ = BI->getSuccessor(I);
             if (BBNumbering.count(Succ) == 0) {
