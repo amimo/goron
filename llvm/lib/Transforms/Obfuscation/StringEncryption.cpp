@@ -33,10 +33,18 @@ struct StringEncryption : public ModulePass {
     Function *DecFunc;
   };
 
+  struct CSUser {
+    CSUser(GlobalVariable *User, GlobalVariable *NewGV) : GV(User), DecGV(NewGV), InitFunc(nullptr) {}
+    GlobalVariable *GV;
+    GlobalVariable *DecGV;
+    Function *InitFunc; // InitFunc will use decryted string to initialize DecGV
+  };
+
   ObfuscationOptions *Options;
   CryptoUtils RandomEngine;
   std::vector<CSPEntry *> ConstantStringPool;
   std::map<GlobalVariable *, CSPEntry *> CSPEntryMap;
+  std::map<GlobalVariable *, CSUser *> CSUserMap;
   GlobalVariable *EncryptedStringTable;
   std::set<GlobalVariable *> MaybeDeadGlobalVars;
 
@@ -55,27 +63,46 @@ struct StringEncryption : public ModulePass {
     for (CSPEntry *Entry : ConstantStringPool) {
       delete (Entry);
     }
+    for (auto &I : CSUserMap) {
+      CSUser *User = I.second;
+      delete (User);
+    }
+    ConstantStringPool.clear();
+    CSPEntryMap.clear();
+    CSUserMap.clear();
+    MaybeDeadGlobalVars.clear();
     return false;
   }
 
   StringRef getPassName() const override { return {"StringEncryption"}; }
 
   bool runOnModule(Module &M) override;
+  void collectConstantStringUser(GlobalVariable *CString, std::set<GlobalVariable *> &Users);
+  bool isValidToEncrypt(GlobalVariable *GV);
   bool processConstantStringUse(Function *F);
+  void deleteUnusedGlobalVariable();
   Function *buildDecryptFunction(Module *M, const CSPEntry *Entry);
-  void getRandomBytes(std::vector<uint8_t> &Bytes, uint32_t MinSize, uint32_t MixSize);
+  Function *buildInitFunction(Module *M, const CSUser *User);
+  void getRandomBytes(std::vector<uint8_t> &Bytes, uint32_t MinSize, uint32_t MaxSize);
+  void lowerGlobalConstant(Constant *CV, IRBuilder<> &IRB, Value *Ptr);
+  void lowerGlobalConstantStruct(ConstantStruct *CS, IRBuilder<> &IRB, Value *Ptr);
+  void lowerGlobalConstantArray(ConstantArray *CA, IRBuilder<> &IRB, Value *Ptr);
 };
 } // namespace llvm
 
 char StringEncryption::ID = 0;
 bool StringEncryption::runOnModule(Module &M) {
-  // phase 1: collect all c strings.
+  std::set<GlobalVariable *> ConstantStringUsers;
+
+  // collect all c strings
   for (GlobalVariable &GV : M.globals()) {
     if (!GV.isConstant() || !GV.hasInitializer()) {
       continue;
     }
-
-    if (ConstantDataSequential *CDS = dyn_cast<ConstantDataSequential>(GV.getInitializer())) {
+    Constant *Init = GV.getInitializer();
+    if (Init == nullptr)
+      continue;
+    if (ConstantDataSequential *CDS = dyn_cast<ConstantDataSequential>(Init)) {
       if (CDS->isCString()) {
         CSPEntry *Entry = new CSPEntry();
         StringRef Data = CDS->getRawDataValues();
@@ -86,16 +113,17 @@ bool StringEncryption::runOnModule(Module &M) {
         Entry->ID = static_cast<unsigned>(ConstantStringPool.size());
         ConstantAggregateZero *ZeroInit = ConstantAggregateZero::get(CDS->getType());
         GlobalVariable *DecGV = new GlobalVariable(M, CDS->getType(), false, GlobalValue::PrivateLinkage,
-                                       ZeroInit, "dec" + Twine::utohexstr(Entry->ID) + GV.getName());
+                                                   ZeroInit, "dec" + Twine::utohexstr(Entry->ID) + GV.getName());
         DecGV->setAlignment(GV.getAlignment());
         Entry->DecGV = DecGV;
         ConstantStringPool.push_back(Entry);
         CSPEntryMap[&GV] = Entry;
+        collectConstantStringUser(&GV, ConstantStringUsers);
       }
     }
   }
 
-  // phase 2: encrypt those strings, build corresponding decrypt function
+  // encrypt those strings, build corresponding decrypt function
   for (CSPEntry *Entry: ConstantStringPool) {
     getRandomBytes(Entry->EncKey, 16, 32);
     for (unsigned i = 0; i < Entry->Data.size(); ++i) {
@@ -104,7 +132,21 @@ bool StringEncryption::runOnModule(Module &M) {
     Entry->DecFunc = buildDecryptFunction(&M, Entry);
   }
 
-  // phase 3: emit the constant string pool
+  // build initialization function for supported constant string users
+  for (GlobalVariable *GV: ConstantStringUsers) {
+    if (isValidToEncrypt(GV)) {
+      Type *EltType = GV->getType()->getElementType();
+      ConstantAggregateZero *ZeroInit = ConstantAggregateZero::get(EltType);
+      GlobalVariable *DecGV = new GlobalVariable(M, EltType, false, GlobalValue::PrivateLinkage,
+                                                 ZeroInit, "dec_" + GV->getName());
+      DecGV->setAlignment(GV->getAlignment());
+      CSUser *User = new CSUser(GV, DecGV);
+      User->InitFunc = buildInitFunction(&M, User);
+      CSUserMap[GV] = User;
+    }
+  }
+
+  // emit the constant string pool
   // | junk bytes | key 1 | encrypted string 1 | junk bytes | key 2 | encrypted string 2 | ...
   std::vector<uint8_t> Data;
   std::vector<uint8_t> JunkBytes;
@@ -123,7 +165,7 @@ bool StringEncryption::runOnModule(Module &M) {
   EncryptedStringTable = new GlobalVariable(M, CDA->getType(), true, GlobalValue::PrivateLinkage,
                                             CDA, "EncryptedStringTable");
 
-  // phase 4: decrypt string back at every use, change the plain string use to the decrypted one
+  // decrypt string back at every use, change the plain string use to the decrypted one
   bool Changed = false;
   for (Function &F:M) {
     if (F.isDeclaration())
@@ -131,21 +173,13 @@ bool StringEncryption::runOnModule(Module &M) {
     Changed |= processConstantStringUse(&F);
   }
 
-  // phase 5: delete unused global variables
-  for (GlobalVariable *GV:MaybeDeadGlobalVars) {
-    if (!GV->hasLocalLinkage())
-      continue;
-    GV->removeDeadConstantUsers();
-    if (GV->use_empty()) {
-      if (GV->hasInitializer()) {
-        Constant *Init = GV->getInitializer();
-        GV->setInitializer(nullptr);
-        if (isSafeToDestroyConstant(Init))
-          Init->destroyConstant();
-      }
-      GV->eraseFromParent();
-    }
+  for (auto &I : CSUserMap) {
+    CSUser *User = I.second;
+    Changed |= processConstantStringUse(User->InitFunc);
   }
+
+  // delete unused global variables
+  deleteUnusedGlobalVariable();
   return Changed;
 }
 
@@ -236,6 +270,58 @@ Function *StringEncryption::buildDecryptFunction(Module *M, const StringEncrypti
   return DecFunc;
 }
 
+Function *StringEncryption::buildInitFunction(Module *M, const StringEncryption::CSUser *User) {
+  LLVMContext &Ctx = M->getContext();
+  IRBuilder<> IRB(Ctx);
+  FunctionType *FuncTy = FunctionType::get(Type::getVoidTy(Ctx), {User->DecGV->getType()}, false);
+  Function *InitFunc =
+      Function::Create(FuncTy, GlobalValue::PrivateLinkage, "__global_variable_initializer_" + User->GV->getName(), M);
+
+  auto ArgIt = InitFunc->arg_begin();
+  Argument *thiz = ArgIt;
+
+  thiz->setName("this");
+  thiz->addAttr(Attribute::NoCapture);
+
+  // convert constant initializer into a series of instructions
+  BasicBlock *Enter = BasicBlock::Create(Ctx, "Enter", InitFunc);
+  IRB.SetInsertPoint(Enter);
+  Constant *Init = User->GV->getInitializer();
+  lowerGlobalConstant(Init, IRB, User->DecGV);
+  IRB.CreateRetVoid();
+  return InitFunc;
+}
+
+void StringEncryption::lowerGlobalConstant(Constant *CV, IRBuilder<> &IRB, Value *Ptr) {
+  if (isa<ConstantAggregateZero>(CV)) {
+    IRB.CreateStore(CV, Ptr);
+    return;
+  }
+
+  if (ConstantArray *CA = dyn_cast<ConstantArray>(CV)) {
+    lowerGlobalConstantArray(CA, IRB, Ptr);
+  } else if (ConstantStruct *CS = dyn_cast<ConstantStruct>(CV)) {
+    lowerGlobalConstantStruct(CS, IRB, Ptr);
+  } else {
+    IRB.CreateStore(CV, Ptr);
+  }
+}
+
+void StringEncryption::lowerGlobalConstantArray(ConstantArray *CA, IRBuilder<> &IRB, Value *Ptr) {
+  for (unsigned i = 0, e = CA->getNumOperands(); i != e; ++i) {
+    Constant *CV = CA->getOperand(i);
+    Value *GEP = IRB.CreateGEP(Ptr, {IRB.getInt32(0), IRB.getInt32(i)});
+    lowerGlobalConstant(CV, IRB, GEP);
+  }
+}
+
+void StringEncryption::lowerGlobalConstantStruct(ConstantStruct *CS, IRBuilder<> &IRB, Value *Ptr) {
+  for (unsigned i = 0, e = CS->getNumOperands(); i != e; ++i) {
+    Value *GEP = IRB.CreateGEP(Ptr, {IRB.getInt32(0), IRB.getInt32(i)});
+    lowerGlobalConstant(CS->getOperand(i), IRB, GEP);
+  }
+}
+
 bool StringEncryption::processConstantStringUse(Function *F) {
   if (!toObfuscate(flag, F, "cse")) {
     return false;
@@ -250,48 +336,127 @@ bool StringEncryption::processConstantStringUse(Function *F) {
     if (PHINode *PHI = dyn_cast<PHINode>(Inst)) {
       for (unsigned int i = 0; i < PHI->getNumIncomingValues(); ++i) {
         if (GlobalVariable *GV = dyn_cast<GlobalVariable>(PHI->getIncomingValue(i))) {
-          auto Iter = CSPEntryMap.find(GV);
-          if (Iter == CSPEntryMap.end()) {
-            continue;
+          auto Iter1 = CSPEntryMap.find(GV);
+          auto Iter2 = CSUserMap.find(GV);
+          if (Iter2 != CSUserMap.end()) { // GV is a constant string user
+            CSUser *User = Iter2->second;
+
+            Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
+            IRBuilder<> IRB(InsertPoint);
+
+            IRB.CreateCall(User->InitFunc, {User->DecGV});
+
+            Inst->replaceUsesOfWith(GV, User->DecGV);
+            MaybeDeadGlobalVars.insert(GV);
+            Changed = true;
+          } else if (Iter1 != CSPEntryMap.end()) { // GV is a constant string
+            CSPEntry *Entry = Iter1->second;
+
+            Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
+            IRBuilder<> IRB(InsertPoint);
+
+            Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
+            Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
+            IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
+
+            Inst->replaceUsesOfWith(GV, Entry->DecGV);
+            MaybeDeadGlobalVars.insert(GV);
+            Changed = true;
           }
-          CSPEntry *Entry = Iter->second;
-
-          Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
-          IRBuilder<> IRB(InsertPoint);
-
-          Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
-          Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
-          IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
-
-          Inst->replaceUsesOfWith(GV, Entry->DecGV);
-          MaybeDeadGlobalVars.insert(GV);
-          Changed = true;
         }
       }
     } else {
       for (User::op_iterator op = Inst->op_begin(); op != Inst->op_end(); ++op) {
         if (GlobalVariable *GV = dyn_cast<GlobalVariable>(*op)) {
-          auto Iter = CSPEntryMap.find(GV);
-          if (Iter == CSPEntryMap.end()) {
-            continue;
+          auto Iter1 = CSPEntryMap.find(GV);
+          auto Iter2 = CSUserMap.find(GV);
+          if (Iter2 != CSUserMap.end()) {
+            CSUser *User = Iter2->second;
+
+            IRBuilder<> IRB(Inst);
+
+            IRB.CreateCall(User->InitFunc, {User->DecGV});
+
+            Inst->replaceUsesOfWith(GV, User->DecGV);
+            MaybeDeadGlobalVars.insert(GV);
+            Changed = true;
+          } else if (Iter1 != CSPEntryMap.end()) {
+            CSPEntry *Entry = Iter1->second;
+
+            IRBuilder<> IRB(Inst);
+
+            Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
+            Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
+            IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
+
+            Inst->replaceUsesOfWith(GV, Entry->DecGV);
+            MaybeDeadGlobalVars.insert(GV);
+            Changed = true;
           }
-          CSPEntry *Entry = Iter->second;
-
-          IRBuilder<> IRB(Inst);
-
-          Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
-          Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
-          IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
-
-          Inst->replaceUsesOfWith(GV, Entry->DecGV);
-          MaybeDeadGlobalVars.insert(GV);
-          Changed = true;
         }
       }
     }
   }
 
   return Changed;
+}
+
+void StringEncryption::collectConstantStringUser(GlobalVariable *CString, std::set<GlobalVariable *> &Users) {
+  SmallPtrSet<Value *, 16> Visited;
+  SmallVector<Value *, 16> ToVisit;
+
+  ToVisit.push_back(CString);
+  while (!ToVisit.empty()) {
+    Value *V = ToVisit.pop_back_val();
+    if (Visited.count(V) > 0)
+      continue;
+    Visited.insert(V);
+    for (Value *User:V->users()) {
+      if (auto *GV = dyn_cast<GlobalVariable>(User)) {
+        Users.insert(GV);
+      } else {
+        ToVisit.push_back(User);
+      }
+    }
+  }
+}
+
+bool StringEncryption::isValidToEncrypt(GlobalVariable *GV) {
+  if(GV->isConstant() && GV->hasInitializer()) {
+    return GV->getInitializer() != nullptr;
+  } else {
+    return false;
+  }
+}
+
+void StringEncryption::deleteUnusedGlobalVariable() {
+  bool Changed = true;
+  while (Changed) {
+    Changed = false;
+    for (auto Iter = MaybeDeadGlobalVars.begin(); Iter != MaybeDeadGlobalVars.end();) {
+      GlobalVariable *GV = *Iter;
+      if (!GV->hasLocalLinkage()) {
+        ++Iter;
+        continue;
+      }
+
+      GV->removeDeadConstantUsers();
+      if (GV->use_empty()) {
+        if (GV->hasInitializer()) {
+          Constant *Init = GV->getInitializer();
+          GV->setInitializer(nullptr);
+          if (isSafeToDestroyConstant(Init))
+            Init->destroyConstant();
+        }
+        Iter = MaybeDeadGlobalVars.erase(Iter);
+        GV->eraseFromParent();
+        Changed = true;
+      } else {
+        ++Iter;
+      }
+
+    }
+  }
 }
 
 ModulePass *llvm::createStringEncryptionPass() { return new StringEncryption(); }

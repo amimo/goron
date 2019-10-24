@@ -120,7 +120,9 @@ struct ObfuscationPassManager : public ModulePass {
     IPObfuscationContext *IPO = llvm::createIPObfuscationContextPass(true);
 
     add(IPO);
-    add(llvm::createStringEncryptionPass(EnableIRStringEncryption || Options->EnableCSE, IPO, Options.get()));
+    if (EnableIRStringEncryption || Options->EnableCSE) {
+      add(llvm::createStringEncryptionPass(true, IPO, Options.get()));
+    }
     add(llvm::createFlatteningPass(EnableIRFlattening || Options->EnableCFF, IPO, Options.get()));
     add(llvm::createIndirectBranchPass(EnableIndirectBr || Options->EnableIndirectBr, IPO, Options.get()));
     add(llvm::createIndirectCallPass(EnableIndirectCall || Options->EnableIndirectCall, IPO, Options.get()));
