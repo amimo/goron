@@ -24,19 +24,21 @@ struct StringEncryption : public ModulePass {
   bool flag;
 
   struct CSPEntry {
-    CSPEntry() : ID(0), Offset(0), DecGV(nullptr), DecFunc(nullptr) {}
+    CSPEntry() : ID(0), Offset(0), DecGV(nullptr), DecStatus(nullptr), DecFunc(nullptr) {}
     unsigned ID;
     unsigned Offset;
     GlobalVariable *DecGV;
+    GlobalVariable *DecStatus; // is decrypted or not
     std::vector<uint8_t> Data;
     std::vector<uint8_t> EncKey;
     Function *DecFunc;
   };
 
   struct CSUser {
-    CSUser(GlobalVariable *User, GlobalVariable *NewGV) : GV(User), DecGV(NewGV), InitFunc(nullptr) {}
+    CSUser(GlobalVariable *User, GlobalVariable *NewGV) : GV(User), DecGV(NewGV), DecStatus(nullptr), InitFunc(nullptr) {}
     GlobalVariable *GV;
     GlobalVariable *DecGV;
+    GlobalVariable *DecStatus; // is decrypted or not
     Function *InitFunc; // InitFunc will use decryted string to initialize DecGV
   };
 
@@ -95,6 +97,9 @@ bool StringEncryption::runOnModule(Module &M) {
   std::set<GlobalVariable *> ConstantStringUsers;
 
   // collect all c strings
+
+  LLVMContext &Ctx = M.getContext();
+  ConstantInt *Zero = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
   for (GlobalVariable &GV : M.globals()) {
     if (!GV.isConstant() || !GV.hasInitializer()) {
       continue;
@@ -114,8 +119,11 @@ bool StringEncryption::runOnModule(Module &M) {
         ConstantAggregateZero *ZeroInit = ConstantAggregateZero::get(CDS->getType());
         GlobalVariable *DecGV = new GlobalVariable(M, CDS->getType(), false, GlobalValue::PrivateLinkage,
                                                    ZeroInit, "dec" + Twine::utohexstr(Entry->ID) + GV.getName());
+        GlobalVariable *DecStatus = new GlobalVariable(M, Type::getInt32Ty(Ctx), false, GlobalValue::PrivateLinkage,
+                                                   Zero, "dec_status_" + Twine::utohexstr(Entry->ID) + GV.getName());
         DecGV->setAlignment(GV.getAlignment());
         Entry->DecGV = DecGV;
+        Entry->DecStatus = DecStatus;
         ConstantStringPool.push_back(Entry);
         CSPEntryMap[&GV] = Entry;
         collectConstantStringUser(&GV, ConstantStringUsers);
@@ -140,7 +148,10 @@ bool StringEncryption::runOnModule(Module &M) {
       GlobalVariable *DecGV = new GlobalVariable(M, EltType, false, GlobalValue::PrivateLinkage,
                                                  ZeroInit, "dec_" + GV->getName());
       DecGV->setAlignment(GV->getAlignment());
+      GlobalVariable *DecStatus = new GlobalVariable(M, Type::getInt32Ty(Ctx), false, GlobalValue::PrivateLinkage,
+          Zero, "dec_status_" + GV->getName());
       CSUser *User = new CSUser(GV, DecGV);
+      User->DecStatus = DecStatus;
       User->InitFunc = buildInitFunction(&M, User);
       CSUserMap[GV] = User;
     }
@@ -236,12 +247,15 @@ Function *StringEncryption::buildDecryptFunction(Module *M, const StringEncrypti
 
   BasicBlock *Enter = BasicBlock::Create(Ctx, "Enter", DecFunc);
   BasicBlock *LoopBody = BasicBlock::Create(Ctx, "LoopBody", DecFunc);
+  BasicBlock *UpdateDecStatus = BasicBlock::Create(Ctx, "UpdateDecStatus", DecFunc);
   BasicBlock *Exit = BasicBlock::Create(Ctx, "Exit", DecFunc);
 
   IRB.SetInsertPoint(Enter);
   ConstantInt *KeySize = ConstantInt::get(Type::getInt32Ty(Ctx), Entry->EncKey.size());
   Value *EncPtr = IRB.CreateInBoundsGEP(Data, KeySize);
-  IRB.CreateBr(LoopBody);
+  Value *DecStatus = IRB.CreateLoad(Entry->DecStatus);
+  Value *IsDecrypted = IRB.CreateICmpEQ(DecStatus, IRB.getInt32(1));
+  IRB.CreateCondBr(IsDecrypted, Exit, LoopBody);
 
   IRB.SetInsertPoint(LoopBody);
   PHINode *LoopCounter = IRB.CreatePHI(IRB.getInt32Ty(), 2);
@@ -262,7 +276,11 @@ Function *StringEncryption::buildDecryptFunction(Module *M, const StringEncrypti
   LoopCounter->addIncoming(NewCounter, LoopBody);
 
   Value *Cond = IRB.CreateICmpEQ(NewCounter, IRB.getInt32(static_cast<uint32_t>(Entry->Data.size())));
-  IRB.CreateCondBr(Cond, Exit, LoopBody);
+  IRB.CreateCondBr(Cond, UpdateDecStatus, LoopBody);
+
+  IRB.SetInsertPoint(UpdateDecStatus);
+  IRB.CreateStore(IRB.getInt32(1), Entry->DecStatus);
+  IRB.CreateBr(Exit);
 
   IRB.SetInsertPoint(Exit);
   IRB.CreateRetVoid();
@@ -285,9 +303,21 @@ Function *StringEncryption::buildInitFunction(Module *M, const StringEncryption:
 
   // convert constant initializer into a series of instructions
   BasicBlock *Enter = BasicBlock::Create(Ctx, "Enter", InitFunc);
+  BasicBlock *InitBlock = BasicBlock::Create(Ctx, "InitBlock", InitFunc);
+  BasicBlock *Exit = BasicBlock::Create(Ctx, "Exit", InitFunc);
+
   IRB.SetInsertPoint(Enter);
+  Value *DecStatus = IRB.CreateLoad(User->DecStatus);
+  Value *IsDecrypted = IRB.CreateICmpEQ(DecStatus, IRB.getInt32(1));
+  IRB.CreateCondBr(IsDecrypted, Exit, InitBlock);
+
+  IRB.SetInsertPoint(InitBlock);
   Constant *Init = User->GV->getInitializer();
   lowerGlobalConstant(Init, IRB, User->DecGV);
+  IRB.CreateStore(IRB.getInt32(1), User->DecStatus);
+  IRB.CreateBr(Exit);
+
+  IRB.SetInsertPoint(Exit);
   IRB.CreateRetVoid();
   return InitFunc;
 }
@@ -330,74 +360,88 @@ bool StringEncryption::processConstantStringUse(Function *F) {
     return false;
   }
   LowerConstantExpr(*F);
+  SmallPtrSet<GlobalVariable *, 16> DecryptedGV; // if GV has multiple use in a block, decrypt only at the first use
   bool Changed = false;
-  for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
-    Instruction *Inst = &*I;
-    if (PHINode *PHI = dyn_cast<PHINode>(Inst)) {
-      for (unsigned int i = 0; i < PHI->getNumIncomingValues(); ++i) {
-        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(PHI->getIncomingValue(i))) {
-          auto Iter1 = CSPEntryMap.find(GV);
-          auto Iter2 = CSUserMap.find(GV);
-          if (Iter2 != CSUserMap.end()) { // GV is a constant string user
-            CSUser *User = Iter2->second;
+  for (BasicBlock &BB : *F) {
+    DecryptedGV.clear();
+    for (Instruction &Inst: BB) {
+      if (PHINode *PHI = dyn_cast<PHINode>(&Inst)) {
+        for (unsigned int i = 0; i < PHI->getNumIncomingValues(); ++i) {
+          if (GlobalVariable *GV = dyn_cast<GlobalVariable>(PHI->getIncomingValue(i))) {
+            auto Iter1 = CSPEntryMap.find(GV);
+            auto Iter2 = CSUserMap.find(GV);
+            if (Iter2 != CSUserMap.end()) { // GV is a constant string user
+              CSUser *User = Iter2->second;
+              if (DecryptedGV.count(GV) > 0) {
+                Inst.replaceUsesOfWith(GV, User->DecGV);
+              } else {
+                Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
+                IRBuilder<> IRB(InsertPoint);
+                IRB.CreateCall(User->InitFunc, {User->DecGV});
+                Inst.replaceUsesOfWith(GV, User->DecGV);
+                MaybeDeadGlobalVars.insert(GV);
+                DecryptedGV.insert(GV);
+                Changed = true;
+              }
+            } else if (Iter1 != CSPEntryMap.end()) { // GV is a constant string
+              CSPEntry *Entry = Iter1->second;
+              if (DecryptedGV.count(GV) > 0) {
+                Inst.replaceUsesOfWith(GV, Entry->DecGV);
+              } else {
+                Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
+                IRBuilder<> IRB(InsertPoint);
 
-            Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
-            IRBuilder<> IRB(InsertPoint);
+                Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
+                Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
+                IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
 
-            IRB.CreateCall(User->InitFunc, {User->DecGV});
-
-            Inst->replaceUsesOfWith(GV, User->DecGV);
-            MaybeDeadGlobalVars.insert(GV);
-            Changed = true;
-          } else if (Iter1 != CSPEntryMap.end()) { // GV is a constant string
-            CSPEntry *Entry = Iter1->second;
-
-            Instruction *InsertPoint = PHI->getIncomingBlock(i)->getTerminator();
-            IRBuilder<> IRB(InsertPoint);
-
-            Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
-            Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
-            IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
-
-            Inst->replaceUsesOfWith(GV, Entry->DecGV);
-            MaybeDeadGlobalVars.insert(GV);
-            Changed = true;
+                Inst.replaceUsesOfWith(GV, Entry->DecGV);
+                MaybeDeadGlobalVars.insert(GV);
+                DecryptedGV.insert(GV);
+                Changed = true;
+              }
+            }
           }
         }
-      }
-    } else {
-      for (User::op_iterator op = Inst->op_begin(); op != Inst->op_end(); ++op) {
-        if (GlobalVariable *GV = dyn_cast<GlobalVariable>(*op)) {
-          auto Iter1 = CSPEntryMap.find(GV);
-          auto Iter2 = CSUserMap.find(GV);
-          if (Iter2 != CSUserMap.end()) {
-            CSUser *User = Iter2->second;
+      } else {
+        for (User::op_iterator op = Inst.op_begin(); op != Inst.op_end(); ++op) {
+          if (GlobalVariable *GV = dyn_cast<GlobalVariable>(*op)) {
+            auto Iter1 = CSPEntryMap.find(GV);
+            auto Iter2 = CSUserMap.find(GV);
+            if (Iter2 != CSUserMap.end()) {
+              CSUser *User = Iter2->second;
+              if (DecryptedGV.count(GV) > 0) {
+                Inst.replaceUsesOfWith(GV, User->DecGV);
+              } else {
+                IRBuilder<> IRB(&Inst);
+                IRB.CreateCall(User->InitFunc, {User->DecGV});
+                Inst.replaceUsesOfWith(GV, User->DecGV);
+                MaybeDeadGlobalVars.insert(GV);
+                DecryptedGV.insert(GV);
+                Changed = true;
+              }
+            } else if (Iter1 != CSPEntryMap.end()) {
+              CSPEntry *Entry = Iter1->second;
+              if (DecryptedGV.count(GV) > 0) {
+                Inst.replaceUsesOfWith(GV, Entry->DecGV);
+              } else {
+                IRBuilder<> IRB(&Inst);
 
-            IRBuilder<> IRB(Inst);
+                Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
+                Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
+                IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
 
-            IRB.CreateCall(User->InitFunc, {User->DecGV});
-
-            Inst->replaceUsesOfWith(GV, User->DecGV);
-            MaybeDeadGlobalVars.insert(GV);
-            Changed = true;
-          } else if (Iter1 != CSPEntryMap.end()) {
-            CSPEntry *Entry = Iter1->second;
-
-            IRBuilder<> IRB(Inst);
-
-            Value *OutBuf = IRB.CreateBitCast(Entry->DecGV, IRB.getInt8PtrTy());
-            Value *Data = IRB.CreateInBoundsGEP(EncryptedStringTable, {IRB.getInt32(0), IRB.getInt32(Entry->Offset)});
-            IRB.CreateCall(Entry->DecFunc, {OutBuf, Data});
-
-            Inst->replaceUsesOfWith(GV, Entry->DecGV);
-            MaybeDeadGlobalVars.insert(GV);
-            Changed = true;
+                Inst.replaceUsesOfWith(GV, Entry->DecGV);
+                MaybeDeadGlobalVars.insert(GV);
+                DecryptedGV.insert(GV);
+                Changed = true;
+              }
+            }
           }
         }
       }
     }
   }
-
   return Changed;
 }
 
@@ -454,7 +498,6 @@ void StringEncryption::deleteUnusedGlobalVariable() {
       } else {
         ++Iter;
       }
-
     }
   }
 }
