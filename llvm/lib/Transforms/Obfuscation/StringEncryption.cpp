@@ -191,6 +191,11 @@ bool StringEncryption::runOnModule(Module &M) {
 
   // delete unused global variables
   deleteUnusedGlobalVariable();
+  for (CSPEntry *Entry: ConstantStringPool) {
+    if (Entry->DecFunc->use_empty()) {
+      Entry->DecFunc->eraseFromParent();
+    }
+  }
   return Changed;
 }
 
