@@ -4,7 +4,7 @@
 namespace llvm {
 class ModulePass;
 class PassRegistry;
-class IPObfuscationContext;
+struct IPObfuscationContext;
 struct ObfuscationOptions;
 
 ModulePass* createStringEncryptionPass();

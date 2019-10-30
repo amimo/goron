@@ -61,7 +61,7 @@ struct StringEncryption : public ModulePass {
     initializeStringEncryptionPass(*PassRegistry::getPassRegistry());
   }
 
-  bool doFinalization(Module &) {
+  bool doFinalization(Module &) override {
     for (CSPEntry *Entry : ConstantStringPool) {
       delete (Entry);
     }
@@ -81,6 +81,9 @@ struct StringEncryption : public ModulePass {
   bool runOnModule(Module &M) override;
   void collectConstantStringUser(GlobalVariable *CString, std::set<GlobalVariable *> &Users);
   bool isValidToEncrypt(GlobalVariable *GV);
+  bool isCString(const ConstantDataSequential *CDS);
+  bool isObjCSelectorPtr(const GlobalVariable *GV);
+  bool isCFConstantStringTag(const GlobalVariable *GV);
   bool processConstantStringUse(Function *F);
   void deleteUnusedGlobalVariable();
   Function *buildDecryptFunction(Module *M, const CSPEntry *Entry);
@@ -108,7 +111,7 @@ bool StringEncryption::runOnModule(Module &M) {
     if (Init == nullptr)
       continue;
     if (ConstantDataSequential *CDS = dyn_cast<ConstantDataSequential>(Init)) {
-      if (CDS->isCString()) {
+      if (isCString(CDS)) {
         CSPEntry *Entry = new CSPEntry();
         StringRef Data = CDS->getRawDataValues();
         Entry->Data.reserve(Data.size());
@@ -144,9 +147,8 @@ bool StringEncryption::runOnModule(Module &M) {
   for (GlobalVariable *GV: ConstantStringUsers) {
     if (isValidToEncrypt(GV)) {
       Type *EltType = GV->getType()->getElementType();
-      ConstantAggregateZero *ZeroInit = ConstantAggregateZero::get(EltType);
       GlobalVariable *DecGV = new GlobalVariable(M, EltType, false, GlobalValue::PrivateLinkage,
-                                                 ZeroInit, "dec_" + GV->getName());
+                                                 Constant::getNullValue(EltType), "dec_" + GV->getName());
       DecGV->setAlignment(GV->getAlignment());
       GlobalVariable *DecStatus = new GlobalVariable(M, Type::getInt32Ty(Ctx), false, GlobalValue::PrivateLinkage,
           Zero, "dec_status_" + GV->getName());
@@ -194,6 +196,8 @@ bool StringEncryption::runOnModule(Module &M) {
   for (CSPEntry *Entry: ConstantStringPool) {
     if (Entry->DecFunc->use_empty()) {
       Entry->DecFunc->eraseFromParent();
+      Entry->DecGV->eraseFromParent();
+      Entry->DecStatus->eraseFromParent();
     }
   }
   return Changed;
@@ -298,7 +302,7 @@ Function *StringEncryption::buildInitFunction(Module *M, const StringEncryption:
   IRBuilder<> IRB(Ctx);
   FunctionType *FuncTy = FunctionType::get(Type::getVoidTy(Ctx), {User->DecGV->getType()}, false);
   Function *InitFunc =
-      Function::Create(FuncTy, GlobalValue::PrivateLinkage, "__global_variable_initializer_" + User->GV->getName(), M);
+      Function::Create(FuncTy, GlobalValue::PrivateLinkage, "global_variable_init_" + User->GV->getName(), M);
 
   auto ArgIt = InitFunc->arg_begin();
   Argument *thiz = ArgIt;
@@ -306,7 +310,6 @@ Function *StringEncryption::buildInitFunction(Module *M, const StringEncryption:
   thiz->setName("this");
   thiz->addAttr(Attribute::NoCapture);
 
-  // convert constant initializer into a series of instructions
   BasicBlock *Enter = BasicBlock::Create(Ctx, "Enter", InitFunc);
   BasicBlock *InitBlock = BasicBlock::Create(Ctx, "InitBlock", InitFunc);
   BasicBlock *Exit = BasicBlock::Create(Ctx, "Exit", InitFunc);
@@ -318,7 +321,18 @@ Function *StringEncryption::buildInitFunction(Module *M, const StringEncryption:
 
   IRB.SetInsertPoint(InitBlock);
   Constant *Init = User->GV->getInitializer();
+
+  // convert constant initializer into a series of instructions
   lowerGlobalConstant(Init, IRB, User->DecGV);
+
+  if (isObjCSelectorPtr(User->GV)) {
+    // resolve selector
+    Function *sel_registerName = (Function *) M->getOrInsertFunction("sel_registerName", FunctionType::get(IRB.getInt8PtrTy(),
+{IRB.getInt8PtrTy()}, false));
+    Value *Selector = IRB.CreateCall(sel_registerName, {Init});
+    IRB.CreateStore(Selector, User->DecGV);
+  }
+
   IRB.CreateStore(IRB.getInt32(1), User->DecStatus);
   IRB.CreateBr(Exit);
 
@@ -471,11 +485,42 @@ void StringEncryption::collectConstantStringUser(GlobalVariable *CString, std::s
 }
 
 bool StringEncryption::isValidToEncrypt(GlobalVariable *GV) {
-  if(GV->isConstant() && GV->hasInitializer()) {
-    return GV->getInitializer() != nullptr;
+  if (!GV->hasInitializer()) {
+    return false;
+  }
+  if(GV->isConstant()){
+    return true;
+  } else if (isCFConstantStringTag(GV) || isObjCSelectorPtr(GV)) {
+    return true;
   } else {
     return false;
   }
+}
+
+bool StringEncryption::isCString(const ConstantDataSequential *CDS) {
+  // isString
+  if (!isa<ArrayType>(CDS->getType()))
+    return false;
+  if (!CDS->getElementType()->isIntegerTy(8) && !CDS->getElementType()->isIntegerTy(16) && !CDS->getElementType()->isIntegerTy(32))
+    return false;
+
+  for (unsigned i = 0, e = CDS->getNumElements();i != e;++i) {
+    uint64_t Elt = CDS->getElementAsInteger(i);
+    if (Elt == 0) {
+      return i == (e - 1); // last element is null
+    }
+  }
+  return false; // null not found
+}
+
+bool StringEncryption::isObjCSelectorPtr(const GlobalVariable *GV) {
+  return GV->isExternallyInitialized() && GV->hasLocalLinkage() &&
+    GV->getName().startswith("OBJC_SELECTOR_REFERENCES_");
+}
+
+bool StringEncryption::isCFConstantStringTag(const GlobalVariable *GV) {
+  Type *ETy = GV->getType()->getElementType();
+  return ETy->isStructTy() && ETy->getStructName() == "struct.__NSConstantString_tag";
 }
 
 void StringEncryption::deleteUnusedGlobalVariable() {

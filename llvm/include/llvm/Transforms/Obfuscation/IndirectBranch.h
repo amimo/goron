@@ -5,7 +5,7 @@
 namespace llvm {
 class FunctionPass;
 class PassRegistry;
-class IPObfuscationContext;
+struct IPObfuscationContext;
 struct ObfuscationOptions;
 
 FunctionPass* createIndirectBranchPass();

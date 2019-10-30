@@ -16,7 +16,7 @@
 
 namespace llvm {
 class FunctionPass;
-class IPObfuscationContext;
+struct IPObfuscationContext;
 struct ObfuscationOptions;
 FunctionPass *createFlatteningPass();
 FunctionPass *createFlatteningPass(bool flag, IPObfuscationContext *IPO, ObfuscationOptions *Options);
