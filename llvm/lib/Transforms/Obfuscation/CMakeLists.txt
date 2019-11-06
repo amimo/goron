@@ -9,6 +9,7 @@ add_llvm_library(LLVMObfuscation
   IndirectGlobalVariable.cpp
   Flattening.cpp
   StringEncryption.cpp
+  LegacyLowerSwitch.cpp
   DEPENDS
   LLVMLinker
   )
