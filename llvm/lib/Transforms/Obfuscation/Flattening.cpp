@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Obfuscation/Flattening.h"
+#include "llvm/Transforms/Obfuscation/LegacyLowerSwitch.h"
 #include "llvm/Transforms/Obfuscation/Utils.h"
 #include "llvm/Transforms/Obfuscation/IPObfuscationContext.h"
 #include "llvm/Transforms/Utils.h"
@@ -78,7 +79,11 @@ bool Flattening::flatten(Function *f) {
   // END OF SCRAMBLER
 
   // Lower switch
+#if LLVM_VERSION_MAJOR * 10 + LLVM_VERSION_MINOR >= 90
+  FunctionPass *lower = createLegacyLowerSwitchPass();
+#else
   FunctionPass *lower = createLowerSwitchPass();
+#endif
   lower->runOnFunction(*f);
 
   // Save all original BB
