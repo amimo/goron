@@ -5,6 +5,7 @@
 #include "llvm/Transforms/Obfuscation/IPObfuscationContext.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Path.h"
 
 #define DEBUG_TYPE "ir-obfuscation"

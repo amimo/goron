@@ -210,9 +210,9 @@ IPObfuscationContext::IPOInfo *IPObfuscationContext::AllocaSecretSlot(Function &
   IRBuilder<> IRB(&F.getEntryBlock().front());
   IntegerType *I32Ty = Type::getInt32Ty(F.getContext());
   AllocaInst *CallerSlot = IRB.CreateAlloca(I32Ty, nullptr, "CallerSlot");
-  CallerSlot->setAlignment(4);
+  CallerSlot->setAlignment(Align(4));
   AllocaInst *CalleeSlot = IRB.CreateAlloca(I32Ty, nullptr, "CalleeSlot");
-  CalleeSlot->setAlignment(4);
+  CalleeSlot->setAlignment(Align(4));
 
   CryptoUtils RandomEngine;
   uint32_t V = RandomEngine.get_uint32_t();
