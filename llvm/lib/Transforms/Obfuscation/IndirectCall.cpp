@@ -173,6 +173,7 @@ struct IndirectCall : public FunctionPass {
       FnPtr->setName("Call_" + Callee->getName());
       CallInst *NewCall = IRB.CreateCall(FTy, FnPtr, Args, Call->getName());
       NewCall->setAttributes(NewCallPAL);
+      NewCall->setCallingConv(CS.getCallingConv());
       Call->replaceAllUsesWith(NewCall);
       Call->eraseFromParent();
     }
